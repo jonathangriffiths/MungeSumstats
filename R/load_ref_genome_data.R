@@ -17,10 +17,17 @@
 #'                                               ref_genome = "GRCH37",
 #'                                               dbSNP=144)
 #' }
-load_ref_genome_data <- function(snps, 
+load_ref_genome_data <- function(snps=NULL,
+                                 granges=NULL,
                                  ref_genome,
                                  dbSNP=c(144,155),
                                  msg = NULL) {
+    if (!is.null(snps) && !is.null(granges)) {
+        stop("Both 'snps' and 'granges' should not be provided. Please provide only one.")
+    }
+    if (is.null(snps) && is.null(granges)) {
+        stop("Both 'snps' and 'granges' are NULL. Please provide at least one.")
+    }
     
     SNP <- NULL
     SNP_LOC_DATA <- load_snp_loc_data(ref_genome, dbSNP, msg = msg)
@@ -33,30 +40,44 @@ load_ref_genome_data <- function(snps,
         genome <- BSgenome.Hsapiens.NCBI.GRCh38::BSgenome.Hsapiens.NCBI.GRCh38
     }
 
-    #snps can contain odd characters, need to sort these
-    #so the snp should be all numeric or should start with rs and then be 
-    #numeric. Find any that aren't and exclude these. The rs id can be inferred
-    #in a later function
-    messager("Preprocessing RSIDs.") 
-    snp_check <- suppressMessages(as.numeric(
-        stringr::str_sub(string = snps, start = 3, end = -1L) 
-    ))
-    snps <- snps[!is.na(snp_check)]
-    #need to make snps unique for cases where non bi-allelic or indels
-    snps <- unique(snps)
-    
-    messager("Validating RSIDs of",formatC(length(snps),big.mark = ","),
-             "SNPs using BSgenome::snpsById...")
-    tm <- system.time({
-        gr_rsids <- BSgenome::snpsById(
-            x = SNP_LOC_DATA,
-            id = snps,
-            genome = genome,
-            ifnotfound = "drop"
-        )
-    }) 
-    messager("BSgenome::snpsById done in",round(tm[[3]]),"seconds.")
-     
+    if(!is.null(snps)){
+        #snps can contain odd characters, need to sort these
+        #so the snp should be all numeric or should start with rs and then be 
+        #numeric. Find any that aren't and exclude these. The rs id can be inferred
+        #in a later function
+        messager("Preprocessing RSIDs.") 
+        snp_check <- suppressMessages(as.numeric(
+            stringr::str_sub(string = snps, start = 3, end = -1L) 
+        ))
+        snps <- snps[!is.na(snp_check)]
+        #need to make snps unique for cases where non bi-allelic or indels
+        snps <- unique(snps)
+        
+        messager("Validating RSIDs of",formatC(length(snps),big.mark = ","),
+                "SNPs using BSgenome::snpsById...")
+        tm <- system.time({
+            gr_rsids <- BSgenome::snpsById(
+                x = SNP_LOC_DATA,
+                id = snps,
+                genome = genome,
+                ifnotfound = "drop"
+            )
+        }) 
+        messager("BSgenome::snpsById done in",round(tm[[3]]),"seconds.")
+    } else { # granges not NULL
+        #need to make snps unique for cases where non bi-allelic or indels
+        snps <- unique(granges)
+        messager("Validating RSIDs of",formatC(length(granges),big.mark = ","),
+                "SNPs using BSgenome::snpsByOverlaps...")
+        tm <- system.time({
+            gr_rsids <- BSgenome::snpsByOverlaps(
+                x = SNP_LOC_DATA,
+                ranges = granges,
+                genome = genome
+            )
+        }) 
+        messager("BSgenome::snpsByOverlaps done in",round(tm[[3]]),"seconds.")
+    }
     rsids <- data.table::setDT(data.frame(gr_rsids))
     data.table::setnames(rsids, "RefSNP_id", "SNP")
     data.table::setorder(rsids, SNP)

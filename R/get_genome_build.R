@@ -6,6 +6,8 @@
 #' @param nThread Number of threads to use for parallel processes.
 #' @param sampled_snps Downsample the number of SNPs used when inferring genome
 #' build to save time.
+#' @param use_rsid Whether to use the rsIDs in the sumstats to match to ref
+#' genomes, or instead chrom/pos. Keep as TRUE unless you don't have the rsIDs.
 #' @param standardise_headers Run
 #' @param standardise_headers Run
 #' \code{standardise_sumstats_column_headers_crossplatform}.
@@ -31,6 +33,7 @@
 get_genome_build <- function(sumstats,
                              nThread = 1,
                              sampled_snps = 10000,
+                             use_rsid = TRUE,
                              standardise_headers = TRUE,
                              mapping_file = sumstatsColHeaders,
                              dbSNP=155,
@@ -78,16 +81,23 @@ get_genome_build <- function(sumstats,
             )
         sumstats <- sumstats_return$sumstats_dt
     }
+    req_cols <- ifelse(use_rsid,
+        c("SNP", "CHR", "BP"),
+        c("CHR", "BP")
 
+    )
+    req_cols_msg <- ifelse(use_rsid, 
+        "SNP ID column (RS ID), CHR and BP (POSITION)",
+        "CHR and BP (POSITION)")
     err_msg <-
         paste0(
-            "SNP ID column (RS ID), CHR and BP (POSITION) columns are needed ",
+            req_cols_msg, " columns are needed ",
             "to infer the genome build. These could not be\nfound in your ",
             "dataset. Please specify the genome build manually to run ",
             "format_sumstats()."
         )
-    # Infer genome build using SNP & CHR & BP
-    if (!all(c("SNP", "CHR", "BP") %in% colnames(sumstats))) {
+    # Infer genome build using (SNP &) CHR & BP
+    if (!all(req_cols %in% colnames(sumstats))) {
       #want it returned rather than throwing an error
       if(isTRUE(allele_match_ref)){
         return(err_msg)
@@ -99,20 +109,26 @@ get_genome_build <- function(sumstats,
 
     #### Do some filtering first to avoid errors ####
     nrow_org <- nrow(sumstats)
-    sumstats <- sumstats[complete.cases(SNP, BP, CHR)]
+    if(use_rsid){
+        sumstats <- sumstats[complete.cases(SNP, BP, CHR)]
+    } else {
+      sumstats <- sumstats[complete.cases(BP, CHR)]
+    }
     err_msg2 <-
         paste0(
-            "SNP ID column (RS ID), CHR and BP (POSITION)",
-            "columns are needed to",
+            req_cols_msg,
+            " columns are needed to",
             " infer the genome build.",
             "These contain too many\nmissing values in",
             " your dataset to be used.",
             "Please specify the genome build manually",
             " to run format_sumstats()"
         )
-    # also remove common incorrect formatting of SNP
-    sumstats <- sumstats[grepl("^rs", SNP), ]
-    sumstats <- sumstats[SNP != ".", ]
+    if(use_rsid){
+        # also remove common incorrect formatting of SNP
+        sumstats <- sumstats[grepl("^rs", SNP), ]
+        sumstats <- sumstats[SNP != ".", ]
+    }
     #also deal with common misformatting of CHR
     # if chromosome col has chr prefix remove it
     sumstats[, CHR := gsub("chr", "", CHR)]
@@ -134,45 +150,79 @@ get_genome_build <- function(sumstats,
       }
     }
     #### Downsample SNPs to save time ####
-    if ((nrow(sumstats) > sampled_snps) && !(is.null(sampled_snps))) {
-        snps <- sample(sumstats$SNP, sampled_snps)
-    } else { # nrow(sumstats)<10k
-        snps <- sumstats$SNP
+    if(use_rsid){
+      if ((nrow(sumstats) > sampled_snps) && !(is.null(sampled_snps))) {
+          snps <- sample(sumstats$SNP, sampled_snps)
+      } else { # nrow(sumstats)<10k
+          snps <- sumstats$SNP
+      }
+      sumstats <- sumstats[SNP %in% snps, ]
+    } else {
+      if ((nrow(sumstats) > sampled_snps) && !(is.null(sampled_snps))) {
+          sumstats <- sumstats[sample(nrow(sumstats), sampled_snps), ]
+      } 
     }
-
-    sumstats <- sumstats[SNP %in% snps, ]
 
     #now split into functions two roles
     if(isTRUE(allele_match_ref)){
       #1. checking for matches for A1/A2 to ref genomes
       if (is.null(ref_genome)){
         #have to check multiple
-        snp_loc_data_37 <- load_ref_genome_data(
-          snps = snps,
-          ref_genome = "GRCH37",
-          dbSNP = dbSNP
-        )
-        snp_loc_data_38 <- load_ref_genome_data(
-          snps = snps,
-          ref_genome = "GRCH38",
-          dbSNP = dbSNP
-        )
+        if(use_rsid){
+          snp_loc_data_37 <- load_ref_genome_data(
+            snps = snps,
+            ref_genome = "GRCH37",
+            dbSNP = dbSNP
+          )
+          snp_loc_data_38 <- load_ref_genome_data(
+            snps = snps,
+            ref_genome = "GRCH38",
+            dbSNP = dbSNP
+          )
+        } else {
+          granges = to_granges(
+            sumstats
+          )
+          snp_loc_data_37 <- load_ref_genome_data(
+            granges = granges,
+            ref_genome = "GRCH37",
+            dbSNP = dbSNP
+          )
+          snp_loc_data_38 <- load_ref_genome_data(
+            granges = granges,
+            ref_genome = "GRCH38",
+            dbSNP = dbSNP
+          )
+        }
         # convert CHR filed in ref genomes to character not factor
         snp_loc_data_37[, seqnames := as.character(seqnames)]
         snp_loc_data_38[, seqnames := as.character(seqnames)]
         # convert CHR filed in data to character if not already
         sumstats[, CHR := as.character(CHR)]
         # Now check which genome build has more matches to data
-        num_37 <-
-          nrow(snp_loc_data_37[sumstats, ,
-                               on = c("SNP"="SNP","pos"="BP","seqnames"="CHR"),
-                               nomatch = FALSE
-          ])
-        num_38 <-
-          nrow(snp_loc_data_38[sumstats, ,
-                               on = c("SNP"="SNP","pos"="BP","seqnames"="CHR"),
-                               nomatch = FALSE
-          ])
+        if(use_rsid){
+          num_37 <-
+            nrow(snp_loc_data_37[sumstats, ,
+                                on = c("SNP"="SNP","pos"="BP","seqnames"="CHR"),
+                                nomatch = FALSE
+            ])
+          num_38 <-
+            nrow(snp_loc_data_38[sumstats, ,
+                                on = c("SNP"="SNP","pos"="BP","seqnames"="CHR"),
+                                nomatch = FALSE
+            ])
+        } else {
+            num_37 <-
+            nrow(snp_loc_data_37[sumstats, ,
+                                on = c("pos"="BP","seqnames"="CHR"),
+                                nomatch = FALSE
+            ])
+          num_38 <-
+            nrow(snp_loc_data_38[sumstats, ,
+                                on = c("pos"="BP","seqnames"="CHR"),
+                                nomatch = FALSE
+            ])
+        }
         if (num_37 > num_38) {
           ref_gen_num <- num_37
           ref_genome <- "GRCH37"
@@ -186,11 +236,22 @@ get_genome_build <- function(sumstats,
       }
       else{
         #only check one chosen
-        snp_loc_data <- load_ref_genome_data(
-          snps = snps,
-          ref_genome = ref_genome,
-          dbSNP = dbSNP
-        )
+        if(use_rsid){
+          snp_loc_data <- load_ref_genome_data(
+            snps = snps,
+            ref_genome = ref_genome,
+            dbSNP = dbSNP
+          )
+        } else {
+          granges = to_granges(
+            sumstats
+          )
+          snp_loc_data <- load_ref_genome_data(
+            granges = granges,
+            ref_genome = ref_genome,
+            dbSNP = dbSNP
+          )
+        }
         # convert CHR filed in ref genomes to character not factor
         snp_loc_data[, seqnames := as.character(seqnames)]
         # convert CHR filed in data to character if not already
@@ -201,18 +262,33 @@ get_genome_build <- function(sumstats,
       # need to take first alt from list to do this
       snp_loc_data[,alt_alleles := unlist(lapply(alt_alleles, 
                                                  function(x) x[[1]]))]
-      num_a1 <-
-        nrow(snp_loc_data[sumstats, ,
-                          on = c("SNP"="SNP","pos"="BP","seqnames"="CHR",
-                                 "ref_allele"="A1","alt_alleles"="A2"),
-                          nomatch = FALSE
-        ])
-      num_a2 <-
-        nrow(snp_loc_data[sumstats, ,
-                          on = c("SNP"="SNP","pos"="BP","seqnames"="CHR",
-                                 "ref_allele"="A2","alt_alleles"="A1"),
-                          nomatch = FALSE
-        ])
+      if(use_rsid){
+        num_a1 <-
+          nrow(snp_loc_data[sumstats, ,
+                            on = c("SNP"="SNP","pos"="BP","seqnames"="CHR",
+                                  "ref_allele"="A1","alt_alleles"="A2"),
+                            nomatch = FALSE
+          ])
+        num_a2 <-
+          nrow(snp_loc_data[sumstats, ,
+                            on = c("SNP"="SNP","pos"="BP","seqnames"="CHR",
+                                  "ref_allele"="A2","alt_alleles"="A1"),
+                            nomatch = FALSE
+          ])
+      } else {
+        num_a1 <-
+          nrow(snp_loc_data[sumstats, ,
+                            on = c("pos"="BP","seqnames"="CHR",
+                                  "ref_allele"="A1","alt_alleles"="A2"),
+                            nomatch = FALSE
+          ])
+        num_a2 <-
+          nrow(snp_loc_data[sumstats, ,
+                            on = c("pos"="BP","seqnames"="CHR",
+                                  "ref_allele"="A2","alt_alleles"="A1"),
+                            nomatch = FALSE
+          ])
+      }
       if(num_a2>=num_a1){
         message("Effect/frq column(s) relate to A2 in the inputted sumstats")
         #this is what MSS expects so no action required
@@ -227,32 +303,61 @@ get_genome_build <- function(sumstats,
     else{
       #2. checking for ref genome
       # otherwise SNP, CHR, BP were all found and can infer
-      snp_loc_data_37 <- load_ref_genome_data(
-        snps = snps,
-        ref_genome = "GRCH37",
-        dbSNP = dbSNP
-      )
-      snp_loc_data_38 <- load_ref_genome_data(
-        snps = snps,
-        ref_genome = "GRCH38",
-        dbSNP = dbSNP
-      )
+      if(use_rsid){
+        snp_loc_data_37 <- load_ref_genome_data(
+          snps = snps,
+          ref_genome = "GRCH37",
+          dbSNP = dbSNP
+        )
+        snp_loc_data_38 <- load_ref_genome_data(
+          snps = snps,
+          ref_genome = "GRCH38",
+          dbSNP = dbSNP
+        )
+      } else {
+          granges = to_granges(
+            sumstats
+          )
+        snp_loc_data_37 <- load_ref_genome_data(
+          granges = granges,
+          ref_genome = "GRCH37",
+          dbSNP = dbSNP
+        )
+        snp_loc_data_38 <- load_ref_genome_data(
+          granges = granges,
+          ref_genome = "GRCH38",
+          dbSNP = dbSNP
+        )
+      }
       # convert CHR filed in ref genomes to character not factor
       snp_loc_data_37[, seqnames := as.character(seqnames)]
       snp_loc_data_38[, seqnames := as.character(seqnames)]
       # convert CHR filed in data to character if not already
       sumstats[, CHR := as.character(CHR)]
       # Now check which genome build has more matches to data
-      num_37 <-
-        nrow(snp_loc_data_37[sumstats, ,
-                             on = c("SNP"="SNP", "pos"="BP", "seqnames"="CHR"),
-                             nomatch = FALSE
-        ])
-      num_38 <-
-        nrow(snp_loc_data_38[sumstats, ,
-                             on = c("SNP"="SNP", "pos"="BP", "seqnames"="CHR"),
-                             nomatch = FALSE
-        ])
+      if(use_rsid){
+        num_37 <-
+          nrow(snp_loc_data_37[sumstats, ,
+                              on = c("SNP"="SNP", "pos"="BP", "seqnames"="CHR"),
+                              nomatch = FALSE
+          ])
+        num_38 <-
+          nrow(snp_loc_data_38[sumstats, ,
+                              on = c("SNP"="SNP", "pos"="BP", "seqnames"="CHR"),
+                              nomatch = FALSE
+          ])
+      } else {
+        num_37 <-
+          nrow(snp_loc_data_37[sumstats, ,
+                              on = c("pos"="BP", "seqnames"="CHR"),
+                              nomatch = FALSE
+          ])
+        num_38 <-
+          nrow(snp_loc_data_38[sumstats, ,
+                              on = c("pos"="BP", "seqnames"="CHR"),
+                              nomatch = FALSE
+          ])
+      }
       #if no matches throw error
       if(num_37==0 && num_38==0){
         msg_err <- 
