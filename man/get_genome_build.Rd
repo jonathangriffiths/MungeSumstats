@@ -9,6 +9,7 @@ get_genome_build(
   sumstats,
   nThread = 1,
   sampled_snps = 10000,
+  use_rsid = TRUE,
   standardise_headers = TRUE,
   mapping_file = sumstatsColHeaders,
   dbSNP = 155,
@@ -25,6 +26,9 @@ the GWAS ,or file path to summary statistics file.}
 
 \item{sampled_snps}{Downsample the number of SNPs used when inferring genome
 build to save time.}
+
+\item{use_rsid}{Whether to use the rsIDs in the sumstats to match to ref
+genomes, or instead chrom/pos. Keep as TRUE unless you don't have the rsIDs.}
 
 \item{standardise_headers}{Run
 \code{standardise_sumstats_column_headers_crossplatform}.}

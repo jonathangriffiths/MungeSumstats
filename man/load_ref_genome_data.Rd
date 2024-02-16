@@ -12,7 +12,13 @@ rsids <- MungeSumstats:::load_ref_genome_data(snps = sumstats_dt$SNP,
 }
 }
 \usage{
-load_ref_genome_data(snps, ref_genome, dbSNP = c(144, 155), msg = NULL)
+load_ref_genome_data(
+  snps = NULL,
+  granges = NULL,
+  ref_genome,
+  dbSNP = c(144, 155),
+  msg = NULL
+)
 }
 \arguments{
 \item{snps}{Character vector SNPs by rs_id from sumstats file of interest.}
